@@ -1,0 +1,4 @@
+name: python-redis-cache
+dependencies:
+  - python=3.7
+

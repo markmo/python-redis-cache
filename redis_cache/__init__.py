@@ -1,8 +1,11 @@
+from datetime import date, datetime
 from functools import wraps
 from hashlib import md5
-from json import dumps, loads
+from json import JSONEncoder, dumps, loads
+import logging
 from time import time
 from base64 import b64encode
+import redis
 
 
 def get_cache_lua_fn(client):
@@ -37,14 +40,29 @@ return value
 """)
     return client._lua_cache_fn
 
+
+class DateTimeEncoder(JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, (datetime, date)):
+            return obj.isoformat()
+
+        return JSONEncoder.default(self, obj)
+
+
+def _dumps(obj):
+    return dumps(obj, cls=DateTimeEncoder, default=str)
+
+
 class RedisCache:
-    def __init__(self, redis_client, prefix="rc", serializer=dumps, deserializer=loads):
+
+    def __init__(self, redis_client, prefix="rc", serializer=_dumps, deserializer=loads):
         self.client = redis_client
         self.prefix = prefix
         self.serializer = serializer
         self.deserializer = deserializer
+        self.log = logging.getLogger('RedisCache')
 
-    def cache(self, ttl=0, limit=0, namespace=None):
+    def cache(self, ttl=0, limit=0, namespace=None, ismethod=False):
         return CacheDecorator(
             redis_client=self.client,
             prefix=self.prefix,
@@ -52,7 +70,8 @@ class RedisCache:
             deserializer=self.deserializer,
             ttl=ttl,
             limit=limit,
-            namespace=namespace
+            namespace=namespace,
+            ismethod=ismethod
         )
 
     def mget(self, *fns_with_args):
@@ -87,8 +106,10 @@ class RedisCache:
             pipeline.execute()
         return deserialized_results
 
+
 class CacheDecorator:
-    def __init__(self, redis_client, prefix="rc", serializer=dumps, deserializer=loads, ttl=0, limit=0, namespace=None):
+
+    def __init__(self, redis_client, prefix="rc", serializer=dumps, deserializer=loads, ttl=0, limit=0, namespace=None, ismethod=False):
         self.client = redis_client
         self.prefix = prefix
         self.serializer = serializer
@@ -97,12 +118,15 @@ class CacheDecorator:
         self.limit = limit
         self.namespace = namespace
         self.keys_key = None
+        self.ismethod = ismethod
+        self.log = logging.getLogger('CacheDecorator')
+        self.offline = False
 
     def get_key(self, args, kwargs):
         serialized_data = self.serializer([args, kwargs])
-
         if not isinstance(serialized_data, str):
             serialized_data = str(b64encode(serialized_data), 'utf-8')
+
         return f'{self.prefix}:{self.namespace}:{serialized_data}'
 
     def __call__(self, fn):
@@ -113,14 +137,31 @@ class CacheDecorator:
         @wraps(fn)
         def inner(*args, **kwargs):
             nonlocal self
-            key = self.get_key(args, kwargs)
-            result = self.client.get(key)
+            if self.offline:
+                return fn(*args, **kwargs)
+
+            if self.ismethod:
+                self.log.debug('is method')
+                key = self.get_key(args[1:], kwargs)
+            else:
+                self.log.debug('is function')
+                key = self.get_key(args, kwargs)
+
+            try:
+                result = self.client.get(key)
+            except redis.exceptions.ConnectionError as err:
+                self.log.error('Lost connection to Redis: %s', str(err), exc_info=False)
+                # assume redis is out for rest of session
+                self.offline = True
+                return fn(*args, **kwargs)
+
             if not result:
                 result = fn(*args, **kwargs)
                 result_serialized = self.serializer(result)
                 get_cache_lua_fn(self.client)(keys=[key, self.keys_key], args=[result_serialized, self.ttl, self.limit])
             else:
                 result = self.deserializer(result)
+
             return result
 
         inner.invalidate = self.invalidate
@@ -134,7 +175,6 @@ class CacheDecorator:
         pipe.delete(key)
         pipe.zrem(self.keys_key, key)
         pipe.execute()
-
 
     def invalidate_all(self, *args, **kwargs):
         all_keys = self.client.zrange(self.keys_key, 0, -1)

@@ -1,0 +1,33 @@
+{% set name = "python-redis-cache" %}
+{% set version = "1.1.0" %}
+
+package:
+  name: "{{ name|lower }}"
+  version: "{{ version }}"
+
+source:
+  path: .
+
+build:
+  number: 0
+  script: "{{ PYTHON }} -m pip install . --no-deps --ignore-installed -vv "
+
+requirements:
+  host:
+    - pip
+    - python
+  run:
+    - python
+
+about:
+  home: https://github.com/markmo/python-redis-cache
+  license: Apache 2.0
+  license_family: APACHE
+  license_file: 
+  summary: Cache using Redis
+  doc_url: 
+  dev_url: 
+
+extra:
+  recipe-maintainers:
+    - https://github.com/markmo

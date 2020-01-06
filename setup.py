@@ -15,6 +15,5 @@ setup(name='python-redis-cache',
       author='Taylor Hakes',
       license='MIT',
       packages=find_packages(),
-      setup_requires=['pytest-runner'],
       tests_require=['pytest', 'mock', 'fakeredis'],
 )
