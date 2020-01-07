@@ -170,12 +170,24 @@ class CacheDecorator:
         return inner
 
     def invalidate(self, *args, **kwargs):
-        key = self.get_key(args, kwargs)
-        pipe = self.client.pipeline()
-        pipe.delete(key)
-        pipe.zrem(self.keys_key, key)
-        pipe.execute()
+        if not self.offline:
+            try:
+                key = self.get_key(args, kwargs)
+                pipe = self.client.pipeline()
+                pipe.delete(key)
+                pipe.zrem(self.keys_key, key)
+                pipe.execute()
+            except redis.exceptions.ConnectionError as err:
+                self.log.error('Lost connection to Redis: %s', str(err), exc_info=False)
+                # assume redis is out for rest of session
+                self.offline = True
 
     def invalidate_all(self, *args, **kwargs):
-        all_keys = self.client.zrange(self.keys_key, 0, -1)
-        self.client.delete(*all_keys, self.keys_key)
+        if not self.offline:
+            try:
+                all_keys = self.client.zrange(self.keys_key, 0, -1)
+                self.client.delete(*all_keys, self.keys_key)
+            except redis.exceptions.ConnectionError as err:
+                self.log.error('Lost connection to Redis: %s', str(err), exc_info=False)
+                # assume redis is out for rest of session
+                self.offline = True
